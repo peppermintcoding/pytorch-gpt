@@ -24,6 +24,7 @@ import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+import matplotlib.pyplot as plt
 
 from model import GPTConfig, GPT
 
@@ -62,6 +63,7 @@ backend = "nccl"  # 'nccl', 'gloo', etc.
 device = "cuda"
 dtype = torch.bfloat16
 compile = True  # use PyTorch 2.0 to compile the model to be faster
+plotting = True
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
@@ -94,17 +96,17 @@ torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
 
 # poor man's data loader
 data = np.load("train.npy")
+
+
 def get_batch():
     ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack(
-        [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
-    )
-    y = torch.stack(
-        [
-            torch.from_numpy((data[i + 1 : i + 1 + block_size]).astype(np.int64))
-            for i in ix
-        ]
-    )
+    x = [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
+    x = torch.stack(x)
+    y = [
+        torch.from_numpy((data[i + 1 : i + 1 + block_size]).astype(np.int64))
+        for i in ix
+    ]
+    y = torch.stack(y)
     # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
     x, y = (
         x.pin_memory().to(device, non_blocking=True),
@@ -115,9 +117,6 @@ def get_batch():
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
-best_val_loss = 1e9
-
-# model init
 model_args = dict(
     n_layer=n_layer,
     n_head=n_head,
@@ -128,11 +127,8 @@ model_args = dict(
     dropout=dropout,
 )
 if init_from == "scratch":
-    # init a new model from scratch
     print("Initializing a new model from scratch")
-    # determine the vocab size we'll use for from-scratch training
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
+    model = GPT(GPTConfig(**model_args))
 elif init_from == "resume":
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
@@ -155,7 +151,6 @@ elif init_from == "resume":
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
     iter_num = checkpoint["iter_num"]
-    best_val_loss = checkpoint["best_val_loss"]
 elif init_from.startswith("gpt2"):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
     # initialize from OpenAI GPT-2 weights
@@ -213,7 +208,8 @@ t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
 running_mfu = -1.0
-while True:
+loss_history = []
+while iter_num < max_iters:
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
@@ -225,13 +221,10 @@ while True:
             "optimizer": optimizer.state_dict(),
             "model_args": model_args,
             "iter_num": iter_num,
-            "best_val_loss": best_val_loss,
         }
         print(f"saving checkpoint to {out_dir}")
         torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
 
-    # forward backward update, with optional gradient accumulation to simulate larger batch size
-    # and using the GradScaler if data type is float16
     for micro_step in range(gradient_accumulation_steps):
         if ddp:
             # in DDP training we only need to sync gradients at the last micro step.
@@ -243,13 +236,10 @@ while True:
             )
         with torch.amp.autocast(device_type=device, dtype=dtype):
             logits, loss = model(X, Y)
-            loss = (
-                loss / gradient_accumulation_steps
-            )  # scale the loss to account for gradient accumulation
+            loss = loss / gradient_accumulation_steps
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch()
         loss.backward()
-    # clip the gradient
     if grad_clip != 0.0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
@@ -261,29 +251,28 @@ while True:
     t0 = t1
     if iter_num % log_interval == 0 and master_process:
         # get loss as float. note: this is a CPU-GPU sync point
-        # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() * gradient_accumulation_steps
+        loss_history.append((iter_num, lossf))
         if local_iter_num >= 5:  # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(
-            f"iter {iter_num}: loss {lossf:.4f}, time: {dt*1000:.2f}ms, tok/s: {int(tokens_per_iter / dt)} mfu {running_mfu*100:.2f}%"
+            f"iter {iter_num}: loss {lossf:.4f}, time: {dt*1000:.2f}ms, tok/s: {int(tokens_per_iter * gradient_accumulation_steps / dt)} mfu {running_mfu*100:.2f}%"
         )
     iter_num += 1
     local_iter_num += 1
 
-    # termination conditions
-    if iter_num > max_iters:
-        checkpoint = {
-            "model": raw_model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "model_args": model_args,
-            "iter_num": iter_num,
-            "best_val_loss": best_val_loss,
-        }
-        print(f"saving checkpoint to {out_dir}")
-        torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
-        break
+checkpoint = {
+    "model": raw_model.state_dict(),
+    "optimizer": optimizer.state_dict(),
+    "model_args": model_args,
+    "iter_num": iter_num,
+}
+print(f"saving checkpoint to {out_dir}")
+torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+
+if plotting:
+    plt.plot([x[0] for x in loss_history], [x[1] for x in loss_history])
 
 if ddp:
     destroy_process_group()
