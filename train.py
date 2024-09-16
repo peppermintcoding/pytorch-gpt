@@ -60,24 +60,9 @@ min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinch
 # DDP settings
 backend = "nccl"  # 'nccl', 'gloo', etc.
 # system
-device = (
-    "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-)
-dtype = (
-    "bfloat16"
-    if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    else "float16"
-)  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
+device = "cuda"
+dtype = torch.bfloat16
 compile = True  # use PyTorch 2.0 to compile the model to be faster
-# -----------------------------------------------------------------------------
-config_keys = [
-    k
-    for k, v in globals().items()
-    if not k.startswith("_") and isinstance(v, (int, float, bool, str))
-]
-exec(open("configurator.py").read())  # overrides from command line or config file
-config = {k: globals()[k] for k in config_keys}  # will be useful for logging
-# -----------------------------------------------------------------------------
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
@@ -107,23 +92,9 @@ if master_process:
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
-device_type = "cuda" if "cuda" in device else "cpu"  # for later use in torch.autocast
-# note: float16 data type will automatically use a GradScaler
-ptdtype = {
-    "float32": torch.float32,
-    "bfloat16": torch.bfloat16,
-    "float16": torch.float16,
-}[dtype]
-ctx = (
-    nullcontext()
-    if device_type == "cpu"
-    else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
-)
 
 # poor man's data loader
 data = np.load("train.npy")
-
-
 def get_batch():
     ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack(
@@ -135,14 +106,11 @@ def get_batch():
             for i in ix
         ]
     )
-    if device_type == "cuda":
-        # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-        x, y = (
-            x.pin_memory().to(device, non_blocking=True),
-            y.pin_memory().to(device, non_blocking=True),
-        )
-    else:
-        x, y = x.to(device), y.to(device)
+    # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+    x, y = (
+        x.pin_memory().to(device, non_blocking=True),
+        y.pin_memory().to(device, non_blocking=True),
+    )
     return x, y
 
 
@@ -159,7 +127,7 @@ model_args = dict(
     bias=bias,
     vocab_size=50304,
     dropout=dropout,
-)  # start with model_args from command line
+)
 if init_from == "scratch":
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -205,12 +173,9 @@ if block_size < model.config.block_size:
     )
 model.to(device)
 
-# initialize a GradScaler. If enabled=False scaler is a no-op
-scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
-
 # optimizer
 optimizer = model.configure_optimizers(
-    weight_decay, learning_rate, (beta1, beta2), device_type
+    weight_decay, learning_rate, (beta1, beta2), device
 )
 if init_from == "resume":
     optimizer.load_state_dict(checkpoint["optimizer"])
@@ -254,14 +219,13 @@ while True:
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
-    if iter_num % checkpoint_iter == 0:
+    if iter_num > 0 and iter_num % checkpoint_iter == 0:
         checkpoint = {
             "model": raw_model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "model_args": model_args,
             "iter_num": iter_num,
             "best_val_loss": best_val_loss,
-            "config": config,
         }
         print(f"saving checkpoint to {out_dir}")
         torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
@@ -277,23 +241,18 @@ while True:
             model.require_backward_grad_sync = (
                 micro_step == gradient_accumulation_steps - 1
             )
-        with ctx:
+        with torch.amp.autocast(device_type=device, dtype=dtype):
             logits, loss = model(X, Y)
             loss = (
                 loss / gradient_accumulation_steps
             )  # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch()
-        # backward pass, with gradient scaling if training in fp16
-        scaler.scale(loss).backward()
+        loss.backward()
     # clip the gradient
     if grad_clip != 0.0:
-        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    # step the optimizer and scaler if training in fp16
-    scaler.step(optimizer)
-    scaler.update()
-    # flush the gradients as soon as we can, no need for this memory anymore
+    optimizer.step()
     optimizer.zero_grad(set_to_none=True)
 
     # timing and logging
@@ -308,7 +267,7 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(
-            f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%"
+            f"iter {iter_num}: loss {lossf:.4f}, time: {dt*1000:.2f}ms, tok/s: {int(tokens_per_iter / dt)} mfu {running_mfu*100:.2f}%"
         )
     iter_num += 1
     local_iter_num += 1
@@ -321,7 +280,6 @@ while True:
             "model_args": model_args,
             "iter_num": iter_num,
             "best_val_loss": best_val_loss,
-            "config": config,
         }
         print(f"saving checkpoint to {out_dir}")
         torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
