@@ -16,17 +16,17 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 (If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
 """
 
+import math
 import os
 import time
-import math
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
-import matplotlib.pyplot as plt
 
-from model import GPTConfig, GPT
+from model import GPT, GPTConfig
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -55,14 +55,14 @@ grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 50  # how many steps to warm up for
-lr_decay_iters = max_iters * 1.0  # should be ~= max_iters per Chinchilla
+lr_decay_iters = max_iters * 0.95  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
 backend = "nccl"  # 'nccl', 'gloo', etc.
 # system
 device = "cuda"
 dtype = torch.bfloat16
-compile = True  # use PyTorch 2.0 to compile the model to be faster
+compile = True
 plotting = True
 
 # various inits, derived attributes, I/O setup
@@ -273,6 +273,7 @@ torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
 
 if plotting:
     plt.plot([x[0] for x in loss_history], [x[1] for x in loss_history])
+    plt.show()
 
 if ddp:
     destroy_process_group()
