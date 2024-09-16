@@ -1,15 +1,19 @@
+### Calliope - POETRY LLM
 
-# nanoGPT
+    Here rise to life again, dead poetry!
+    Let it, O holy Muses, for I am yours,
+    And here Calliope, strike a higher key,
+    Accompanying my song with that sweet air
+    which made the wretched Magpies feel a blow
+    that turned all hope of pardon to despair
+Dante, "Purgatorio", Canto I, lines 7 to 12
 
-![nanoGPT](assets/nanogpt.jpg)
+[Calliope Wikipedia](https://en.wikipedia.org/wiki/Calliope)
 
-The simplest, fastest repository for training/finetuning medium-sized GPTs. It is a rewrite of [minGPT](https://github.com/karpathy/minGPT) that prioritizes teeth over education. Still under active development, but currently the file `train.py` reproduces GPT-2 (124M) on OpenWebText, running on a single 8XA100 40GB node in about 4 days of training. The code itself is plain and readable: `train.py` is a ~300-line boilerplate training loop and `model.py` a ~300-line GPT model definition, which can optionally load the GPT-2 weights from OpenAI. That's it.
+this is based on NanoGPT from Andrej Kaparthy. this is a toy environment to train
+a gpt model on poetry data.
 
-![repro124m](assets/gpt2_124M_loss.png)
-
-Because the code is so simple, it is very easy to hack to your needs, train new models from scratch, or finetune pretrained checkpoints (e.g. biggest one currently available as a starting point would be the GPT-2 1.3B model from OpenAI).
-
-## install
+### install
 
 ```
 pip install torch numpy transformers datasets tiktoken wandb tqdm
@@ -22,10 +26,9 @@ Dependencies:
 -  `transformers` for huggingface transformers <3 (to load GPT-2 checkpoints)
 -  `datasets` for huggingface datasets <3 (if you want to download + preprocess OpenWebText)
 -  `tiktoken` for OpenAI's fast BPE code <3
--  `wandb` for optional logging <3
 -  `tqdm` for progress bars <3
 
-## quick start
+### quick start
 
 If you are not a deep learning professional and you just want to feel the magic and get your feet wet, the fastest way to get started is to train a character-level GPT on the works of Shakespeare. First, we download it as a single (1MB) file and turn it from raw text into one large stream of integers:
 
@@ -97,7 +100,7 @@ Not bad for ~3 minutes on a CPU, for a hint of the right character gestalt. If y
 
 Finally, on Apple Silicon Macbooks and with a recent PyTorch version make sure to add `--device=mps` (short for "Metal Performance Shaders"); PyTorch then uses the on-chip GPU that can *significantly* accelerate training (2-3X) and allow you to use larger networks. See [Issue 28](https://github.com/karpathy/nanoGPT/issues/28) for more.
 
-## reproducing GPT-2
+### reproducing GPT-2
 
 A more serious deep learning professional may be more interested in reproducing GPT-2 results. So here we go - we first tokenize the dataset, in this case the [OpenWebText](https://openwebtext2.readthedocs.io/en/latest/), an open reproduction of OpenAI's (private) WebText:
 
@@ -126,7 +129,7 @@ It is a good idea to benchmark your interconnect (e.g. iperf3). In particular, i
 
 Finally, to train on a single GPU simply run the `python train.py` script. Have a look at all of its args, the script tries to be very readable, hackable and transparent. You'll most likely want to tune a number of those variables depending on your needs.
 
-## baselines
+### baselines
 
 OpenAI GPT-2 checkpoints allow us to get some baselines in place for openwebtext. We can get the numbers as follows:
 
@@ -148,7 +151,7 @@ and observe the following losses on train and val:
 
 However, we have to note that GPT-2 was trained on (closed, never released) WebText, while OpenWebText is just a best-effort open reproduction of this dataset. This means there is a dataset domain gap. Indeed, taking the GPT-2 (124M) checkpoint and finetuning on OWT directly for a while reaches loss down to ~2.85. This then becomes the more appropriate baseline w.r.t. reproduction.
 
-## finetuning
+### finetuning
 
 Finetuning is no different than training, we just make sure to initialize from a pretrained model and train with a smaller learning rate. For an example of how to finetune a GPT on new text go to `data/shakespeare` and run `prepare.py` to download the tiny shakespeare dataset and render it into a `train.bin` and `val.bin`, using the OpenAI BPE tokenizer from GPT-2. Unlike OpenWebText this will run in seconds. Finetuning can take very little time, e.g. on a single GPU just a few minutes. Run an example finetuning like:
 
@@ -182,7 +185,7 @@ Thou hast no right, no right, but to be sold.
 
 Whoa there, GPT, entering some dark place over there. I didn't really tune the hyperparameters in the config too much, feel free to try!
 
-## sampling / inference
+### sampling / inference
 
 Use the script `sample.py` to sample either from pre-trained GPT-2 models released by OpenAI, or from a model you trained yourself. For example, here is a way to sample from the largest available `gpt2-xl` model:
 
@@ -195,13 +198,13 @@ python sample.py \
 
 If you'd like to sample from a model you trained, use the `--out_dir` to point the code appropriately. You can also prompt the model with some text from a file, e.g. ```python sample.py --start=FILE:prompt.txt```.
 
-## efficiency notes
+### efficiency notes
 
 For simple model benchmarking and profiling, `bench.py` might be useful. It's identical to what happens in the meat of the training loop of `train.py`, but omits much of the other complexities.
 
 Note that the code by default uses [PyTorch 2.0](https://pytorch.org/get-started/pytorch-2.0/). At the time of writing (Dec 29, 2022) this makes `torch.compile()` available in the nightly release. The improvement from the one line of code is noticeable, e.g. cutting down iteration time from ~250ms / iter to 135ms / iter. Nice work PyTorch team!
 
-## todos
+### todos
 
 - Investigate and add FSDP instead of DDP
 - Eval zero-shot perplexities on standard evals (e.g. LAMBADA? HELM? etc.)
@@ -212,7 +215,7 @@ Note that the code by default uses [PyTorch 2.0](https://pytorch.org/get-started
 - Additional logging around network health (e.g. gradient clip events, magnitudes)
 - Few more investigations around better init etc.
 
-## troubleshooting
+### troubleshooting
 
 Note that by default this repo uses PyTorch 2.0 (i.e. `torch.compile`). This is fairly new and experimental, and not yet available on all platforms (e.g. Windows). If you're running into related error messages try to disable this by adding `--compile=False` flag. This will slow down the code but at least it will run.
 
@@ -222,6 +225,6 @@ For more questions/discussions feel free to stop by **#nanoGPT** on Discord:
 
 [![](https://dcbadge.vercel.app/api/server/3zy8kqD9Cp?compact=true&style=flat)](https://discord.gg/3zy8kqD9Cp)
 
-## acknowledgements
+### acknowledgements
 
 All nanoGPT experiments are powered by GPUs on [Lambda labs](https://lambdalabs.com), my favorite Cloud GPU provider. Thank you Lambda labs for sponsoring nanoGPT!
