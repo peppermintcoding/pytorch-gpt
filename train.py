@@ -32,7 +32,7 @@ from model import GPT, GPTConfig
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
 out_dir = "out"
-log_interval = 1
+log_interval = 10
 checkpoint_step = 1_000
 init_from = "scratch"  # 'scratch' or 'resume' or 'gpt2*'
 # data
@@ -238,14 +238,14 @@ while step < max_steps:
     optimizer.zero_grad(set_to_none=True)
 
     # timing and logging
-    t1 = time.time()
-    dt = t1 - t0
     if step % log_interval == 0 and master_process:
         # get loss as float. note: this is a CPU-GPU sync point
         lossf = loss.item() * grad_acc_steps
         loss_history.append((step, lossf))
+        t1 = time.time()
+        dt = t1 - t0
         print(
-            f"step {step}: loss: {lossf:.4f} tok/s: {int((tokens_per_step * grad_acc_steps) / dt):,}"
+            f"step {step}: loss: {lossf:.4f} tok/s: {int((tokens_per_step * grad_acc_steps * log_interval) / dt):,}"
         )
     step += 1
 
