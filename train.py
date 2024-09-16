@@ -19,7 +19,6 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 import os
 import time
 import math
-from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -181,11 +180,12 @@ if init_from == "resume":
     optimizer.load_state_dict(checkpoint["optimizer"])
 checkpoint = None  # free up memory
 
-# compile the model
 if compile:
     print("compiling the model... (takes a ~minute)")
-    unoptimized_model = model
-    model = torch.compile(model)  # requires PyTorch 2.0
+    # max-autotune does not work on a2000
+    # reduce-overhead is slower
+    # max-autotune-no-cudagraphs same as default for speed
+    model = torch.compile(model)
 
 # wrap model into DDP container
 if ddp:
