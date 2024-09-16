@@ -198,13 +198,12 @@ def get_lr(step):
 
 
 # training loop
+start_time = time.time()
 X, Y = get_batch()  # fetch the very first batch
-t0 = time.time()
-local_step = 0  # number of steps in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
-running_mfu = -1.0
 loss_history = []
 while step < max_steps:
+    t0 = time.time()
     # determine and set the learning rate for this step
     lr = get_lr(step) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
@@ -226,9 +225,7 @@ while step < max_steps:
             # the official way to do this is with model.no_sync() context manager, but
             # I really dislike that this bloats the code and forces us to repeat code
             # looking at the source of that context manager, it just toggles this variable
-            model.require_backward_grad_sync = (
-                micro_step == grad_acc_steps - 1
-            )
+            model.require_backward_grad_sync = micro_step == grad_acc_steps - 1
         with torch.amp.autocast(device_type=device, dtype=dtype):
             logits, loss = model(X, Y)
             loss = loss / grad_acc_steps
@@ -243,19 +240,14 @@ while step < max_steps:
     # timing and logging
     t1 = time.time()
     dt = t1 - t0
-    t0 = t1
     if step % log_interval == 0 and master_process:
         # get loss as float. note: this is a CPU-GPU sync point
         lossf = loss.item() * grad_acc_steps
         loss_history.append((step, lossf))
-        if local_step >= 5:  # let the training loop settle a bit
-            mfu = raw_model.estimate_mfu(batch_size * grad_acc_steps, dt)
-            running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(
-            f"step {step}: loss: {lossf:.4f} tok/s: {int(tokens_per_step * grad_acc_steps / dt)} mfu: {running_mfu*100:.2f}%"
+            f"step {step}: loss: {lossf:.4f} tok/s: {int((tokens_per_step * grad_acc_steps) / dt):,}"
         )
     step += 1
-    local_step += 1
 
 checkpoint = {
     "model": raw_model.state_dict(),
@@ -265,6 +257,7 @@ checkpoint = {
 }
 print(f"saving checkpoint to {out_dir}")
 torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+print(f"training took {(time.time() - start_time) / 60:.2f} minutes")
 
 if plotting:
     plt.plot([x[0] for x in loss_history], [x[1] for x in loss_history])
