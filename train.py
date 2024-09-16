@@ -33,10 +33,10 @@ from model import GPT, GPTConfig
 # I/O
 out_dir = "out"
 log_interval = 1
-checkpoint_iter = 1_000
+checkpoint_step = 1_000
 init_from = "scratch"  # 'scratch' or 'resume' or 'gpt2*'
 # data
-gradient_accumulation_steps = 1  # used to simulate larger batch sizes
+grad_acc_steps = 1  # used to simulate larger batch sizes
 batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 256
 # model
@@ -47,15 +47,15 @@ dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 learning_rate = 6e-4  # max learning rate
-max_iters = 1_000  # total number of training iterations
+max_steps = 1_000  # total number of training steps
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True  # whether to decay the learning rate
-warmup_iters = 50  # how many steps to warm up for
-lr_decay_iters = max_iters * 0.95  # should be ~= max_iters per Chinchilla
+warmup_steps = 50  # how many steps to warm up for
+lr_decay_steps = max_steps * 0.95  # should be ~= max_steps per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
 backend = "nccl"  # 'nccl', 'gloo', etc.
@@ -77,16 +77,16 @@ if ddp:
     master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
     seed_offset = ddp_rank  # each process gets a different seed
     # world_size number of processes will be training simultaneously, so we can scale
-    # down the desired gradient accumulation iterations per process proportionally
-    assert gradient_accumulation_steps % ddp_world_size == 0
-    gradient_accumulation_steps //= ddp_world_size
+    # down the desired gradient accumulation steps per process proportionally
+    assert grad_acc_steps % ddp_world_size == 0
+    grad_acc_steps //= ddp_world_size
 else:
     # if not ddp, we are running on a single gpu, and one process
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
-tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
-print(f"tokens per iteration will be: {tokens_per_iter:,}")
+tokens_per_step = grad_acc_steps * ddp_world_size * batch_size * block_size
+print(f"tokens per step will be: {tokens_per_step:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
@@ -96,27 +96,23 @@ torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
 
 # poor man's data loader
 data = np.load("train.npy")
+print(f"total number of tokens: {len(data):,}")
 
 
 def get_batch():
     ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
-    x = torch.stack(x)
-    y = [
-        torch.from_numpy((data[i + 1 : i + 1 + block_size]).astype(np.int64))
-        for i in ix
-    ]
-    y = torch.stack(y)
+    x = [(data[i : i + block_size]).astype(np.int64) for i in ix]
+    y = [(data[i + 1 : i + 1 + block_size]).astype(np.int64) for i in ix]
+    x = torch.stack([torch.from_numpy(xi) for xi in x])
+    y = torch.stack([torch.from_numpy(yi) for yi in y])
     # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-    x, y = (
-        x.pin_memory().to(device, non_blocking=True),
-        y.pin_memory().to(device, non_blocking=True),
-    )
+    x = x.pin_memory().to(device, non_blocking=True)
+    y = y.pin_memory().to(device, non_blocking=True)
     return x, y
 
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
-iter_num = 0
+step = 0
 model_args = dict(
     n_layer=n_layer,
     n_head=n_head,
@@ -140,8 +136,7 @@ elif init_from == "resume":
     for k in ["n_layer", "n_head", "n_embd", "block_size", "bias", "vocab_size"]:
         model_args[k] = checkpoint_model_args[k]
     # create the model
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
+    model = GPT(GPTConfig(**model_args))
     state_dict = checkpoint["model"]
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -150,7 +145,7 @@ elif init_from == "resume":
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
-    iter_num = checkpoint["iter_num"]
+    step = checkpoint["step"]
 elif init_from.startswith("gpt2"):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
     # initialize from OpenAI GPT-2 weights
@@ -188,15 +183,15 @@ if ddp:
 
 
 # learning rate decay scheduler (cosine with warmup)
-def get_lr(it):
-    # 1) linear warmup for warmup_iters steps
-    if it < warmup_iters:
-        return learning_rate * it / warmup_iters
-    # 2) if it > lr_decay_iters, return min learning rate
-    if it > lr_decay_iters:
+def get_lr(step):
+    # 1) linear warmup for warmup_steps
+    if step < warmup_steps:
+        return learning_rate * step / warmup_steps
+    # 2) if it > lr_decay_steps, return min learning rate
+    if step > lr_decay_steps:
         return min_lr
     # 3) in between, use cosine decay down to min learning rate
-    decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
+    decay_ratio = (step - warmup_steps) / (lr_decay_steps - warmup_steps)
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
     return min_lr + coeff * (learning_rate - min_lr)
@@ -205,38 +200,38 @@ def get_lr(it):
 # training loop
 X, Y = get_batch()  # fetch the very first batch
 t0 = time.time()
-local_iter_num = 0  # number of iterations in the lifetime of this process
+local_step = 0  # number of steps in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
 running_mfu = -1.0
 loss_history = []
-while iter_num < max_iters:
-    # determine and set the learning rate for this iteration
-    lr = get_lr(iter_num) if decay_lr else learning_rate
+while step < max_steps:
+    # determine and set the learning rate for this step
+    lr = get_lr(step) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
-    if iter_num > 0 and iter_num % checkpoint_iter == 0:
+    if step > 0 and step % checkpoint_step == 0:
         checkpoint = {
             "model": raw_model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "model_args": model_args,
-            "iter_num": iter_num,
+            "step": step,
         }
         print(f"saving checkpoint to {out_dir}")
         torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
 
-    for micro_step in range(gradient_accumulation_steps):
+    for micro_step in range(grad_acc_steps):
         if ddp:
             # in DDP training we only need to sync gradients at the last micro step.
             # the official way to do this is with model.no_sync() context manager, but
             # I really dislike that this bloats the code and forces us to repeat code
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (
-                micro_step == gradient_accumulation_steps - 1
+                micro_step == grad_acc_steps - 1
             )
         with torch.amp.autocast(device_type=device, dtype=dtype):
             logits, loss = model(X, Y)
-            loss = loss / gradient_accumulation_steps
+            loss = loss / grad_acc_steps
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch()
         loss.backward()
@@ -249,24 +244,24 @@ while iter_num < max_iters:
     t1 = time.time()
     dt = t1 - t0
     t0 = t1
-    if iter_num % log_interval == 0 and master_process:
+    if step % log_interval == 0 and master_process:
         # get loss as float. note: this is a CPU-GPU sync point
-        lossf = loss.item() * gradient_accumulation_steps
-        loss_history.append((iter_num, lossf))
-        if local_iter_num >= 5:  # let the training loop settle a bit
-            mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
+        lossf = loss.item() * grad_acc_steps
+        loss_history.append((step, lossf))
+        if local_step >= 5:  # let the training loop settle a bit
+            mfu = raw_model.estimate_mfu(batch_size * grad_acc_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(
-            f"iter {iter_num}: loss {lossf:.4f}, time: {dt*1000:.2f}ms, tok/s: {int(tokens_per_iter * gradient_accumulation_steps / dt)} mfu {running_mfu*100:.2f}%"
+            f"step {step}: loss: {lossf:.4f} tok/s: {int(tokens_per_step * grad_acc_steps / dt)} mfu: {running_mfu*100:.2f}%"
         )
-    iter_num += 1
-    local_iter_num += 1
+    step += 1
+    local_step += 1
 
 checkpoint = {
     "model": raw_model.state_dict(),
     "optimizer": optimizer.state_dict(),
     "model_args": model_args,
-    "iter_num": iter_num,
+    "step_num": step,
 }
 print(f"saving checkpoint to {out_dir}")
 torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
