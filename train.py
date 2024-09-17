@@ -36,7 +36,7 @@ log_interval = 10
 checkpoint_step = 10_000
 init_from = "scratch"  # 'scratch' or 'resume' or 'gpt2*'
 # data
-grad_acc_steps = 1  # used to simulate larger batch sizes
+grad_acc_steps = 2  # used to simulate larger batch sizes
 batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 256
 # model
@@ -56,7 +56,7 @@ grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
 warmup_steps = 100  # how many steps to warm up for
 lr_decay_steps = max_steps * 0.95  # should be ~= max_steps per Chinchilla
-min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+min_lr = 4e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
 backend = "nccl"  # 'nccl', 'gloo', etc.
 # system
@@ -86,7 +86,7 @@ else:
     seed_offset = 0
     ddp_world_size = 1
 tokens_per_step = grad_acc_steps * ddp_world_size * batch_size * block_size
-print(f"tokens per step will be: {tokens_per_step:,}")
+print(f"tokens per step will be: {tokens_per_step:,} for {max_steps:,} steps")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
@@ -203,8 +203,8 @@ start_time = time.time()
 X, Y = get_batch()  # fetch the very first batch
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
 loss_history = []
+t0 = time.time()
 while step < max_steps:
-    t0 = time.time()
     # determine and set the learning rate for this step
     lr = get_lr(step) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
@@ -245,8 +245,9 @@ while step < max_steps:
         loss_history.append((step, lossf))
         t1 = time.time()
         dt = t1 - t0
+        t0 = t1
         remaining_time = int((max_steps - step) / log_interval * dt) / 60
-        toks_per_second = int((tokens_per_step * grad_acc_steps * log_interval) / dt)
+        toks_per_second = int((tokens_per_step * log_interval) / dt)
         print(
             f"step {step}: loss: {lossf:.4f} tok/s: {toks_per_second:,} remaining time: {remaining_time:.1f} minutes"
         )
