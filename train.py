@@ -33,28 +33,28 @@ from model import GPT, GPTConfig
 # I/O
 out_dir = "out"
 log_interval = 10
-checkpoint_step = 1_000
+checkpoint_step = 10_000
 init_from = "scratch"  # 'scratch' or 'resume' or 'gpt2*'
 # data
 grad_acc_steps = 1  # used to simulate larger batch sizes
 batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 256
 # model
-n_layer = 8
+n_layer = 12
 n_head = 8
 n_embd = 512
 dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 learning_rate = 6e-4  # max learning rate
-max_steps = 1_000  # total number of training steps
+max_steps = 10_000  # total number of training steps
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True  # whether to decay the learning rate
-warmup_steps = 50  # how many steps to warm up for
+warmup_steps = 100  # how many steps to warm up for
 lr_decay_steps = max_steps * 0.95  # should be ~= max_steps per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
@@ -117,6 +117,7 @@ model_args = dict(
     n_layer=n_layer,
     n_head=n_head,
     n_embd=n_embd,
+    mlp_hidden_size=2*n_embd,
     block_size=block_size,
     bias=bias,
     vocab_size=50304,

@@ -76,12 +76,11 @@ class CausalSelfAttention(nn.Module):
         return y
 
 class MLP(nn.Module):
-
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_fc    = nn.Linear(config.n_embd, config.mlp_hidden_size, bias=config.bias)
         self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(config.mlp_hidden_size, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -92,7 +91,6 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
@@ -112,11 +110,11 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    mlp_hidden_size: int = 4 * 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
 class GPT(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         assert config.vocab_size is not None
