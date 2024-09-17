@@ -244,8 +244,10 @@ while step < max_steps:
         loss_history.append((step, lossf))
         t1 = time.time()
         dt = t1 - t0
+        remaining_time = int((max_steps - step) / log_interval * dt) / 60
+        toks_per_second = int((tokens_per_step * grad_acc_steps * log_interval) / dt)
         print(
-            f"step {step}: loss: {lossf:.4f} tok/s: {int((tokens_per_step * grad_acc_steps * log_interval) / dt):,}"
+            f"step {step}: loss: {lossf:.4f} tok/s: {toks_per_second:,} remaining time: {remaining_time:.1f} minutes"
         )
     step += 1
 
