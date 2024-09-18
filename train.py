@@ -47,7 +47,7 @@ dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 learning_rate = 6e-4  # max learning rate
-max_steps = 10_000  # total number of training steps
+max_steps = 2_500  # total number of training steps
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -165,7 +165,7 @@ model.to(device)
 
 # optimizer
 optimizer = model.configure_optimizers(
-    weight_decay, learning_rate, (beta1, beta2), device
+    weight_decay, learning_rate, (beta1, beta2), device, optim_type="soap"
 )
 if init_from == "resume":
     optimizer.load_state_dict(checkpoint["optimizer"])
